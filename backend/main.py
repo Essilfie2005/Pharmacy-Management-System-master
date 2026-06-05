@@ -4,6 +4,9 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List, Optional
 import os
+import io
+import pandas as pd
+from fastapi import FastAPI, Depends, File, UploadFile
 
 from database import db
 from ml import model
@@ -98,3 +101,59 @@ def trigger_alert(student_id: str, phone_number: str = "+233555555555", database
     database.commit()
     
     return {"status": "success", "sms_result": result}
+
+@app.post("/api/upload")
+async def upload_csv(file: UploadFile = File(...), database: Session = Depends(db.get_db)):
+    content = await file.read()
+    df = pd.read_csv(io.BytesIO(content))
+    
+    required_cols = ['student_id', 'attendance_rate', 'quiz_average', 'assignment_rate', 'mobile_engagement', 'financial_aid']
+    if not all(col in df.columns for col in required_cols):
+        return {"error": f"CSV must contain columns: {required_cols}"}
+        
+    students_to_add = []
+    for _, row in df.iterrows():
+        existing = database.query(db.Student).filter(db.Student.student_id == str(row['student_id'])).first()
+        if existing:
+            continue
+            
+        features = [
+            float(row['attendance_rate']),
+            float(row['quiz_average']),
+            float(row['assignment_rate']),
+            int(row['mobile_engagement']),
+            int(row['financial_aid'])
+        ]
+        
+        prediction = model.predict_risk(features)
+        
+        db_student = db.Student(
+            student_id=str(row['student_id']),
+            attendance_rate=float(row['attendance_rate']),
+            quiz_average=float(row['quiz_average']),
+            assignment_rate=float(row['assignment_rate']),
+            mobile_engagement=int(row['mobile_engagement']),
+            financial_aid=int(row['financial_aid']),
+            risk_score=float(prediction['risk_score']),
+            is_flagged=prediction['is_flagged']
+        )
+        
+        if len(prediction['top_factors']) > 0:
+            db_student.top_factor_1 = prediction['top_factors'][0]['feature']
+        if len(prediction['top_factors']) > 1:
+            db_student.top_factor_2 = prediction['top_factors'][1]['feature']
+            
+        students_to_add.append(db_student)
+        
+    if students_to_add:
+        database.add_all(students_to_add)
+        database.commit()
+        
+    return {"status": "success", "inserted": len(students_to_add)}
+
+@app.delete("/api/reset")
+def reset_database(database: Session = Depends(db.get_db)):
+    database.query(db.CounsellorLog).delete()
+    database.query(db.Student).delete()
+    database.commit()
+    return {"status": "success", "message": "Database wiped."}
