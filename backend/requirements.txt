@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+xgboost
+shap
+scikit-learn
+sdv
+optuna
+mysql-connector-python
+SQLAlchemy
+pandas
+numpy
+matplotlib
+africastalking
+pydantic
